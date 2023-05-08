@@ -8,7 +8,7 @@ from datetime import datetime
 
 DEPOSIT_EUR_FEE=">depEUR"
 def DEBUG(x):
-    if 0 : print(f"[DD]:{str(x)}")
+    if 1 : print(f"[DD]:{str(x)}")
 
 def actualAsset(asset): return asset.replace(".S","")
 
@@ -25,7 +25,8 @@ def ERROR(x):
 
 class AValue(object):
     ''' A value with an associated asset '''
-    def __init__(self, asset, value):
+    def __init__(self, asset:str, value):
+        assert(type(asset) == str)
         self.asset,self.value = asset, value
     def __repr__(self): return f" {self.value} {self.asset}"
         
@@ -34,7 +35,7 @@ class Transaction(object):
         self.src, self.dst, self.fees, self.bal = src,dst,fees,bal
         self.notice, self.date, self.txid = notice, date, txid
     def __str__(self):
-        return f" {self.src} => {self.dst} (Fees : {' + '.join([str(f) for f in self.fees])})"
+        return f"[{self.txid}] {self.src} => {self.dst} (Fees : {' + '.join([str(f) for f in self.fees])})"
 # 'time': '2020-12-30 21:39:54.7679'
 def krakenTime(sTime):
     try:
@@ -104,7 +105,7 @@ class Ledger_Kraken(CSV_Gen):
         @property
         def fee(self): return self.line["fee"]
         @property
-        def hasFees(self): return self.line["fee"] > 1e-10
+        def hasFees(self): return abs(self.line["fee"]) > 1e-10
         @property
         def balance(self): return self.line["balance"]
         @property
@@ -135,8 +136,8 @@ class Ledger_Kraken(CSV_Gen):
             
         entry = Ledger_Kraken._Entry(line)
         # for breakpoint
-        if line["refid"] == "Q4NRRFH-AAJ3V4-XCCVIW":
-            _dbg=1
+#         if line["refid"] == "BSPAUZW-73ZMTB-RZTWPF":
+#             _dbg=1
             
         if entry.type == "staking" or  entry.type == "margin":
             # Virtually create the line since it has not the same 'refid' (or no such line exists)
@@ -191,26 +192,42 @@ class Ledger_Kraken(CSV_Gen):
             print(f"While processing {line}", file = sys.stderr)
             print(f"Previous entry was {prevEntry}", file = sys.stderr)
             ERROR (f"src.value = {src.value} , src.value = {dst.value} , ")
+        
+        # Check special case when Two consecutive transaction cancel each other (withdrawal with neg fees on second)
+        if (src.asset == dst.asset
+            and abs(src.value + dst.value + sum([f.value for f in fees])) < 1e-7):
+            # SRC = DST and no impact on total amount, just skip that operation
+            DEBUG(f"Skipping {entry.txid}/{prevEntry.txid} because it is a NULL operation")
+            res = None
+        else:
+            bal=[AValue(asset=e.asset, value=e.balance) for e in [entry, prevEntry] if e.balance != None]
             
-        bal=[AValue(asset=e.asset, value=e.balance) for e in [entry, prevEntry] if e.balance != None]
-        
-        res = Transaction(src=src, dst=dst, fees=fees, bal=bal, notice=reason,
-                           date=line['time'], txid=line['txid'])
-        
-        # note : some staking operations are sometime shown as 2 distinct transactions which causes the loss of
-        # actual transaction context. In that case, the 2 transactions are consolidated in a single one
-        
-        res = self.consolidateWithLastTx(res)
+            res = Transaction(src=src, dst=dst, fees=fees, bal=bal, notice=reason,
+                               date=line['time'], txid=line['txid'])
+            
+            # note : some staking operations are sometime shown as 2 distinct transactions which causes the loss of
+            # actual transaction context. In that case, the 2 transactions are consolidated in a single one
+            
+            res = self.consolidateWithLastTx(res)
         # print (res)
         del self.pending[entry.refid]
         
         return res
     def consolidateWithLastTx(self, trans:Transaction) -> Transaction:
         # Find if a pending transfer of the same asset exists
-        if trans.notice != "transfer" :return trans
         
-        assert(trans.src.asset == trans.dst.asset)
         name = actualAsset(trans.src.asset)
+        
+        if trans.notice == "transfer":
+            assert(trans.src.asset == trans.dst.asset)
+        elif trans.notice == "withdrawal" :
+            if not (trans.src.asset == trans.dst.asset
+                    and trans.src.value + trans.dst.value == 0):
+                return trans
+            else:
+                DEBUG (f"Add withdrawal pending({name})")
+        else:return trans
+        
         if name not in self.pendingtransfer:
             self.pendingtransfer[name] = trans
             DEBUG (f"Add transfer pending({name}):{self.pendingtransfer[name]}")

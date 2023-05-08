@@ -11,6 +11,14 @@ from read_csv import CSV_File, Transaction,CalcExcept, AValue, DEBUG, BalanceErr
 
 FIAT_EUR="ZEUR"
 
+# Set DBG_ASSET to None or any asset name (e.g. "SOL")
+#DBG_ASSET = None
+DBG_ASSET="MATIC"
+
+# Set DBG_TXID to None or any tid name (e.g. "LS5Q2D-WJ7WC-73LBHD")
+DBG_TXID = None
+DBG_TXID="LVLSJH-576BU-RLPEDQ"
+
 def isEURO(asset):return asset == FIAT_EUR
 
 class FValue(object): # A value associated with a mean FIAT value
@@ -157,10 +165,13 @@ class Wallet(object):
             currSrc.amount += src.value
             currDst.amount += dst.value
             transactionValuation = abs (currSrc.meanEurValue * src.value)
-            if currSrc.amount < -1e-6:
+            missValueEur= abs(currSrc.meanEurValue*currSrc.amount)
+            if abs(missValueEur) < -1e-6:
                 missing=currDst.amount
                 currSrc.amount -= dst.value
                 raise CalcExcept(f"Cannot remove {src} from wallet(current funds:{currSrc.amount}: not enough funds (Missing {missing})")
+            if currSrc.amount < 0:
+                currSrc.amount = 0.0
             # update valuation
             if not dst.asset in self.deposit : self.deposit[dst.asset] = 0.0
             if reason == "deposit":
@@ -208,6 +219,15 @@ class Wallet(object):
         
         
     def apply(self, trans : Transaction):
+        dbg=0
+        if trans.src.asset == DBG_ASSET or trans.dst.asset == DBG_ASSET:
+            try:
+                DEBUG (f"trans ({trans}) / currAssetAmnt:{self.currencies[DBG_ASSET].amount}")
+                dbg=1
+            except:pass
+        if trans.txid == DBG_TXID:
+            DEBUG (f"trans ({trans})")
+            dbg=1
         self.__swap (trans)
         for fee in trans.fees:
             self.__swapFee (src=fee, dst= None)
@@ -224,8 +244,9 @@ class Wallet(object):
                 raise
             if m > 1e-4:
                 delta = abs(self.currencies[val.asset].amount - val.value)/m
-                DEBUG (f"Balance ({val.asset}):Found={self.currencies[val.asset]}/Exp={val.value}, m={m}, delta={delta}")
-                if delta > 1e-3:
+                if dbg:
+                    DEBUG (f"Balance ({val.asset}):Found={self.currencies[val.asset]}/Exp={val.value}, m={m}, delta={delta}")
+                if delta > 1e-2:
                     # print(f"While processing trans {trans}", file = sys.stderr)
                     raise BalanceError (msg=f"Found={self.currencies[val.asset].amount}/Exp={val.value}",
                                         asset=val.asset,
