@@ -8,7 +8,7 @@ from datetime import datetime
 
 DEPOSIT_EUR_FEE=">depEUR"
 def DEBUG(x):
-    if 1 : print(f"[DD]:{str(x)}")
+    if 0 : print(f"[DD]:{str(x)}")
 
 def actualAsset(asset): return asset.replace(".S","")
 
@@ -35,7 +35,9 @@ class Transaction(object):
         self.src, self.dst, self.fees, self.bal = src,dst,fees,bal
         self.notice, self.date, self.txid = notice, date, txid
     def __str__(self):
-        return f"[{self.txid}] {self.src} => {self.dst} (Fees : {' + '.join([str(f) for f in self.fees])})"
+        fees=' + '.join([str(f) for f in self.fees])
+        if fees: fees = f" (Fees : {fees})"
+        return f"[{self.txid}] {self.src} => {self.dst} {fees}"
 # 'time': '2020-12-30 21:39:54.7679'
 def krakenTime(sTime):
     try:

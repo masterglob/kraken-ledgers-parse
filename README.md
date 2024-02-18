@@ -35,7 +35,7 @@ Note:
 - There is no need to list EUR deposits, as by definition, the buying price is constant and does not need justification
 
 ### Running
-Once the ledgers and deposits entries are ready, siply execute `impots_k.py` as python 3 script.
+Once the ledgers and deposits entries are ready, simply execute `impots_k.py` as python 3 script.
 
 In case of success, a text summary is displayed on the console, providing:
 - A summary of all assets as follow:
