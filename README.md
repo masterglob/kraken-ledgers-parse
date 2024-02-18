@@ -7,7 +7,7 @@ It is intended to fit French tax declaration rules (2022), but may be used in mo
 - Create a sub-folder `files` and create ledgers and deposits entries. (see below)
 
 ### Ledgers
-This file is the Kraken export and conains all operations on this platform
+This file is the Kraken export and contains all operations on this platform
 - In your Kraken account, export a LEDGERS csv file. this exports MUST start with the account creation and must contains all operations since.
 - Save this files as `files/ledgers<XXXX>.csv`, replacing <XXXX> by the current year. (e.g. `files/ledgers2022.csv`). It is expected that the year is ended, so that all transactions are declared
 

@@ -5,18 +5,24 @@ Created on 16 avr. 2023
 '''
 import sys
 from datetime import datetime
+import re
 
 DEPOSIT_EUR_FEE=">depEUR"
 def DEBUG(x):
     if 0 : print(f"[DD]:{str(x)}")
 
-def actualAsset(asset): return asset.replace(".S","")
+def actualAsset(asset):
+    m = re.match(r'(.*[^0-9])[0-9]*[.][MS]?', asset)
+    if m:
+        return m.group(1)
+    return asset
 
 class BalanceError(Exception): 
-    def __init__(self, msg, asset, txid): 
+    def __init__(self, msg, asset, txid, delta): 
         Exception(msg)
         self.msg=msg 
         self.txid = txid
+        self.delta = delta
         self.asset=asset 
 class CalcExcept(Exception): 
     def __init__(self, msg): Exception(msg) 
@@ -89,6 +95,7 @@ class AirDrops(CSV_Gen):
                            date=line['time'], txid=line['refid'])
     
 class Ledger_Kraken(CSV_Gen):
+    TRANSFERABLE={"ETH": "XETH"}
     class _Entry:
         def __init__(self, line:dict):
             self.line = line.copy()
@@ -135,11 +142,14 @@ class Ledger_Kraken(CSV_Gen):
     def toTransaction(self, line:list) -> Transaction:
         if line["subtype"] == "spotfromfutures" and line["type"] =="transfer" :
             line["type"] = "reason" 
+        
+        if line["txid"] == "LLFDLB-EM6Y3-G5VLTA":
+            _dbg=1
             
         entry = Ledger_Kraken._Entry(line)
         # for breakpoint
-#         if line["refid"] == "BSPAUZW-73ZMTB-RZTWPF":
-#             _dbg=1
+        if line["refid"] == "LLFDLB-EM6Y3-G5VLTA":
+            _dbg=1
             
         if entry.type == "staking" or  entry.type == "margin":
             # Virtually create the line since it has not the same 'refid' (or no such line exists)
@@ -219,6 +229,12 @@ class Ledger_Kraken(CSV_Gen):
         # Find if a pending transfer of the same asset exists
         
         name = actualAsset(trans.src.asset)
+        nameIni=name[:]
+
+        # Some Crypto are renamed, which implies a "transfer" with 2 different names (e.g. XETH => ETH)
+        # Always use the same alternate name
+        if name in Ledger_Kraken.TRANSFERABLE:
+            name = Ledger_Kraken.TRANSFERABLE[name]
         
         if trans.notice == "transfer":
             assert(trans.src.asset == trans.dst.asset)
@@ -230,7 +246,7 @@ class Ledger_Kraken(CSV_Gen):
                 DEBUG (f"Add withdrawal pending({name})")
         else:return trans
         
-        if name not in self.pendingtransfer:
+        if not name in self.pendingtransfer:    
             self.pendingtransfer[name] = trans
             DEBUG (f"Add transfer pending({name}):{self.pendingtransfer[name]}")
             return None
@@ -266,7 +282,7 @@ class CSV_Kraken(CSV_Gen):
            "POLIS", "USDC", "LUNA", "LUNAC", "UST", "BSX", "LUNA2", "XETCZ", "NEAR", "SHIB",
            "XXBTZ", "XXBT", 
            "ETH", "XETHZ", "XETH", "ETHW"]
-    ALIASES={"XETHZ":"ETH", "XETH" :"ETH", "XXBTZ":"XXBT"}
+    ALIASES={"XETHZ":"XETH", "XXBTZ":"XXBT"}
     def __init__(self): CSV_Gen.__init__(self)
     def name(self): return "Kraken"  
     @staticmethod

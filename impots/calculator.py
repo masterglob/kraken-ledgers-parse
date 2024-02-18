@@ -7,22 +7,39 @@ import sys
 
 from datetime import datetime
 
-from read_csv import CSV_File, Transaction,CalcExcept, AValue, DEBUG, BalanceError, DEPOSIT_EUR_FEE
+from read_csv import CSV_File, Transaction,CalcExcept, AValue, DEBUG, BalanceError, DEPOSIT_EUR_FEE, actualAsset, Ledger_Kraken
 
-FIAT_EUR="ZEUR"
+from journal import Journal
+from known_coins import FIAT_EUR
+
 
 # Set DBG_ASSET to None or any asset name (e.g. "SOL")
-#DBG_ASSET = None
-DBG_ASSET="MATIC"
+DBG_ASSET = None
+#DBG_ASSET="MATIC"
 
 # Set DBG_TXID to None or any tid name (e.g. "LS5Q2D-WJ7WC-73LBHD")
 DBG_TXID = None
-DBG_TXID="LVLSJH-576BU-RLPEDQ"
 
 def isEURO(asset):return asset == FIAT_EUR
 
+def niceFloat(f):
+    if abs(f) < 1e-4: return f"{f:.2e}"
+    if abs(f) < 10: return f"{f:.3f}" 
+    return f"{f:.0f}" 
+class CGain:
+    def __init__(self, trans, gain, tVal, deposit, wVal, fees =0):
+        self.trans= trans
+        self.gain= gain
+        self.tVal= tVal # Transaction valuation
+        self.wVal= wVal # Wallet total valuation
+        self.deposit= deposit
+        self.fees= fees
+    
 class FValue(object): # A value associated with a mean FIAT value
     def __init__(self, asset):
+        if (asset == "ETH2"):
+                assert(False)
+        asset=actualAsset(asset)
         self.amount = 0.0
         self.asset=asset
         self.meanEurValue = 0.0
@@ -102,6 +119,7 @@ class FValue(object): # A value associated with a mean FIAT value
 class Wallet(object):
     def __init__(self):
         print("[II] Created a wallet")
+        self.journal = Journal()
         self.currencies={} # A {asset:FValue} dict
         self.depositEUR = 0.0
         self.deposit={FIAT_EUR:0.0, DEPOSIT_EUR_FEE:0.0}  # asset:value (includes staking) 
@@ -111,6 +129,8 @@ class Wallet(object):
         self.lastTransactionDate = None # (date)
         self.firstTransactionDate = None # (date)
         
+    def valueInEuro(self, val:AValue):
+        return val.value * self.currencies[val.asset].meanEurValue
     
     def shortStatus(self):
         return f"gains:{self.gainTotal}, injected:{self.depositEUR}"
@@ -119,7 +139,7 @@ class Wallet(object):
         return self.deposit[DEPOSIT_EUR_FEE] *1.0 # Just used to check and log external non-EURO deposits
     def valuationEUR(self):
         return sum(c.valuationEUR() for _,c in self.currencies.items()) - self.deposit[FIAT_EUR] * 1.0
-    def __swapFee(self, src, dst):
+    def __swapFee(self, src:AValue, dst:AValue, gain):
         if not dst : dst = AValue(asset=src.asset, value=0.0)
         # print (f"__swapFee ({src},{dst})")
         if src.asset not in self.currencies:
@@ -130,10 +150,12 @@ class Wallet(object):
         currDst = self.currencies[dst.asset]
         currSrc.amount += src.value
         currDst.amount += dst.value
+        if gain:
+            gain.fees += self.valueInEuro(src) +  self.valueInEuro(dst)
         
     def __swap(self, trans :Transaction):
         # for breakpoint:
-        if trans.txid == "Q4NRRFH-AAJ3V4-XCCVIW":
+        if trans.txid == DBG_TXID:
             _dbg=1 # print ("!Break!")
         src=trans.src
         dst=trans.dst
@@ -157,64 +179,60 @@ class Wallet(object):
         if dst.asset not in self.currencies:
             self.currencies[dst.asset] = FValue(dst.asset)
         
-        if 1:
-            if not (src.value <= 0):  raise Exception( f"Wallet.swap(src.value={src.value})")
-            currSrc = self.currencies[src.asset]
-            currDst = self.currencies[dst.asset]
-            dstPrevAmount = currDst.amount
-            currSrc.amount += src.value
-            currDst.amount += dst.value
-            transactionValuation = abs (currSrc.meanEurValue * src.value)
-            missValueEur= abs(currSrc.meanEurValue*currSrc.amount)
-            if abs(missValueEur) < -1e-6:
-                missing=currDst.amount
-                currSrc.amount -= dst.value
-                raise CalcExcept(f"Cannot remove {src} from wallet(current funds:{currSrc.amount}: not enough funds (Missing {missing})")
-            if currSrc.amount < 0:
-                currSrc.amount = 0.0
-            # update valuation
-            if not dst.asset in self.deposit : self.deposit[dst.asset] = 0.0
-            if reason == "deposit":
-                self.deposit[dst.asset] += 1.0 * dst.value
-                # print(f"Deposited {dst} => {self.deposit[dst.asset]} ")
-            elif reason == "withdrawal":
-                # prev = self.deposit[dst.asset]
-                self.deposit[dst.asset] += 1.0 * src.value
-                # print(f"Withdrawn {dst} :{prev} => {self.deposit[dst.asset]} ")
-                # Note : withdraw can be negative due to staking
-                pass
-            else:
-                # The "src" wallet value is alrady up to date (only amount changed, mean value is not modified)
-                # The Dst wallet mean value must be recomputed
-                dstTotalValue = (currDst.meanEurValue  * dstPrevAmount) + transactionValuation
-                
-                if currDst.amount > 1e-8:
-                    currDst.meanEurValue = dstTotalValue / currDst.amount
-                # print(f"Mean value for {dst} changed to {currDst.meanEurValue}")
-#         else:
-#             # old method
-#             self.currencies[src.asset].sell(src.value, dst)
-#             
-#             if dst is None: return
-#             
-#             if not (dst.value >= 0):  raise Exception( f"amount={dst.value}")
-#             self.currencies[dst.asset].buy(dst.value, src)
+        if not (src.value <= 0):  raise Exception( f"Wallet.swap(src.value={src.value})")
+        currSrc = self.currencies[src.asset]
+        currDst = self.currencies[dst.asset]
+        dstPrevAmount = currDst.amount
+        currSrc.amount += src.value
+        currDst.amount += dst.value
+        transactionValuation = abs (currSrc.meanEurValue * src.value)
+        missValueEur= abs(currSrc.meanEurValue*currSrc.amount)
+        if abs(missValueEur) < -1e-6:
+            missing=currDst.amount
+            currSrc.amount -= dst.value
+            raise CalcExcept(f"Cannot remove {src} from wallet(current funds:{currSrc.amount}: not enough funds (Missing {missing})")
+        if currSrc.amount < 0:
+            currSrc.amount = 0.0
+        # update valuation
+        if not dst.asset in self.deposit : self.deposit[dst.asset] = 0.0
+        if reason == "deposit":
+            self.deposit[dst.asset] += 1.0 * dst.value
+            self.journal.deposit(trans, dst.asset, 1.0 * dst.value)
+            # print(f"Deposited {dst} => {self.deposit[dst.asset]} ")
+        elif reason == "withdrawal":
+            # prev = self.deposit[dst.asset]
+            self.deposit[dst.asset] += 1.0 * src.value
+            self.journal.withdrawal(trans, dst.asset, 1.0 * src.value)
+            # print(f"Withdrawn {dst} :{prev} => {self.deposit[dst.asset]} ")
+            # Note : withdraw can be negative due to staking
+            pass
+        else:
+            # The "src" wallet value is already up to date (only amount changed, mean value is not modified)
+            # The Dst wallet mean value must be recomputed
+            dstTotalValue = (currDst.meanEurValue  * dstPrevAmount) + transactionValuation
+            
+            if currDst.amount > 1e-8:
+                currDst.meanEurValue = dstTotalValue / currDst.amount
+            # print(f"Mean value for {dst} changed to {currDst.meanEurValue}")
+            self.journal.transaction(trans, src.asset, dst.asset, currDst.meanEurValue)
+            
         self.depositEUR = self.deposit[FIAT_EUR]
         if reason not in ["staking"]: # Avoid useless logs
             # Now, update the estimated value of wallet
             newValuation = self.valuationEUR()
             depositDelta = self.valuationDeposit() - oldDeposit
-            gain =newValuation-oldValuation
-            gainRes = (trans, gain, depositDelta)
+            g = newValuation- oldValuation
+            gainRes = CGain(trans, g, transactionValuation, depositDelta,newValuation)
             self.gains.append(gainRes)
-            self.gainTotal += gain
+            self.gainTotal += gainRes.gain
             date = trans.date
             assert (type(date) == datetime)
             year = date.date().year
             assert(year > 1990)
             if year not in self.gainsByYear: self.gainsByYear[year] = 0.0
-            self.gainsByYear[year] += gain
+            self.gainsByYear[year] += gainRes.gain
 #             print (f"Valuation :{gainRes} / deposit:{self.depositEUR} EUR")
+            return gainRes
         return
         
         
@@ -228,9 +246,9 @@ class Wallet(object):
         if trans.txid == DBG_TXID:
             DEBUG (f"trans ({trans})")
             dbg=1
-        self.__swap (trans)
+        g = self.__swap (trans)
         for fee in trans.fees:
-            self.__swapFee (src=fee, dst= None)
+            self.__swapFee (src=fee, dst= None, gain=g)
         self.shortStatus()
         # Check balances
         for val in trans.bal:
@@ -248,9 +266,14 @@ class Wallet(object):
                     DEBUG (f"Balance ({val.asset}):Found={self.currencies[val.asset]}/Exp={val.value}, m={m}, delta={delta}")
                 if delta > 1e-2:
                     # print(f"While processing trans {trans}", file = sys.stderr)
+                    print(f"Balance error in transaction {trans} @{trans.date}")
+                    print(f"Balances: {trans.bal}")
+                    print(f"- A balance of {self.currencies[val.asset].amount} {val.asset} was calculated.")
+                    print(f"- A balance of {val.value} {val.asset} was found in ledger.")
                     raise BalanceError (msg=f"Found={self.currencies[val.asset].amount}/Exp={val.value}",
                                         asset=val.asset,
-                                        txid=trans.txid)
+                                        txid=trans.txid,
+                                        delta=delta)
                 elif delta > 1e-6:
                     # resynchronize to avoid cumulative errors
                     # TODO : could compute and check total discrepancy.
@@ -261,31 +284,52 @@ class Wallet(object):
     def asString(self):
         res = {}
         for k,v in self.currencies.items():
-            isStake = len(k)>2 and k[-2:] == ".S"
-            name = k[:-2] if isStake else k[:]
-            if name not in res: res[name] = (0.0,0.0,0.0) # amount/staked/deposited
-            amount,staked,deposited = res[name]
+            asset  = actualAsset(k)
+            isStake = k != asset
+            # isStake = len(k)>2 and (k[-2:] == ".S" or k[-2:] == ".M")
+            name = asset
+            if name in Ledger_Kraken.TRANSFERABLE:
+                # Must concatenate 2 different Coins
+                name = Ledger_Kraken.TRANSFERABLE[name]
+                
+            if name not in res: res[name] = (0.0,0.0,0.0, 0.0) # amount/staked/deposited/meanEurValue
+            amount,staked,deposited,meanEurValue = res[name]
+            if amount * meanEurValue > 1E-5:
+                meanEurValue= (v.meanEurValue * v.amount + meanEurValue*amount)/(v.amount+amount)
+            else:meanEurValue= v.meanEurValue
+            
             if isStake:staked += v.amount
             else:amount += v.amount
             if amount < 0 and amount > -1e-8 : amount =0.0
             deposited += self.deposit[k]
+            res[name] = amount,staked,deposited, meanEurValue
             
-            res[name] = amount,staked,deposited
         out=[]
+        # Add title
+        out.append("+-------+--------------------+--------------+--------------------+")
+        out.append("| Coin   | Balance            | Purch. price | Withdraw /Dep     |")
+        out.append("+--------+--------------------+--------------+-------------------+")
+        # Add result
         for k in sorted(res.keys()):
-            amount,staked,deposited = res[k]
+            amount,staked,deposited,meanEurValue = res[k]
+            amount,staked = amount+staked , 0 # We don't care about stake in summary
             if abs (amount) < 1e-7 and  abs (staked) < 1e-7 and  abs (deposited) < 1e-7 :continue
-            s = f"{k:7}:{amount:>18.6f} "
-            if staked > 1e-7     : s += f" Stake:{staked:>16.6f}  "
-            else                 : s += " " *(16+9)
+            s = f"| {k:7}|{amount:>18.6f} "
             
-            if deposited > 1e-7   : s += f"Deposited:{deposited:>16.6f}  "
-            elif deposited < -1e-7 : s += f"Withdrawn:{-deposited:>16.6f}  "
-            else                   : s += " " *(16+12)
+            mbv = niceFloat(meanEurValue)
+            mbv =" "*(12-len(mbv)) + mbv
             
-            buyVal = self.currencies[k].meanEurValue 
-            s+= f"{buyVal:>+10.2f}"
+            s += f" | {mbv} | "
+            
+            dw = niceFloat(abs(deposited))
+            dw =" "*(12-len(dw)) + dw
+            
+            if deposited > 1e-7    : s += f"Dep. {dw} |"
+            elif deposited < -1e-7 : s += f"With.{dw} |"
+            else                   : s += " " *(18) + "|"
+            
             out.append(s)
+        out.append("+--------+--------------------+--------------+-------------------+")
         return out
     
 class GainCalculcator(object):
@@ -330,12 +374,13 @@ class GainCalculcator(object):
                 print (f"New balance:{trans.bal}", file=journalFile)
                 asset = trans.src.asset
                 mean = wallet.currencies[asset].meanEurValue
-                if asset != FIAT_EUR:
-                    print (f"Mean buy price for {asset} is {mean} EUR", file=journalFile)
-                asset = trans.dst.asset
-                mean = wallet.currencies[asset].meanEurValue
-                if asset != FIAT_EUR:
-                    print (f"Mean buy price for {asset} is {mean} EUR", file=journalFile)
+                if asset != FIAT_EUR and mean*wallet.currencies[asset].amount > 1E-4:
+                    print (f"Mean buy price for {asset} is {niceFloat(mean)} EUR", file=journalFile)
+                if asset != trans.dst.asset:
+                    asset = trans.dst.asset
+                    mean = wallet.currencies[asset].meanEurValue
+                    if asset != FIAT_EUR and mean*wallet.currencies[asset].amount > 1E-4:
+                        print (f"Mean buy price for {asset} is {niceFloat(mean)} EUR", file=journalFile)
         
         print ("All operations succeeded.")
 
