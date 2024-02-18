@@ -1,2 +1,8 @@
 files/
 __pycache__
+out
+/files*
+/justif*
+.project
+.pydevproject
+.settings/

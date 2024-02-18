@@ -18,12 +18,14 @@ DBG_ASSET = None
 #DBG_ASSET="MATIC"
 
 # Set DBG_TXID to None or any tid name (e.g. "LS5Q2D-WJ7WC-73LBHD")
-DBG_TXID = None
+DBG_TXID = "LJAI5D-44HPZ-RUDXXS"
 
 def isEURO(asset):return asset == FIAT_EUR
 
 def niceFloat(f):
+    if abs(f) < 1e-20: return "0"
     if abs(f) < 1e-4: return f"{f:.2e}"
+    if abs(f) < 1e-2: return f"{f:.4f}"
     if abs(f) < 10: return f"{f:.3f}" 
     return f"{f:.0f}" 
 class CGain:

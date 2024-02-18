@@ -72,12 +72,14 @@ if __name__ == '__main__':
             with open(os.path.join(outDir, outname), "w") as outFile:
                 print (f'"date","txid","gain","total"', file =outFile)
                 _sum = 0.0
+                _nbOper = 0
                 for cgain in gains.wallet.gains:
                     t = cgain.trans
                     tVal = abs(cgain.tVal)
                     g = cgain.gain
                     if abs(g) + abs(cgain.deposit) < 1e-7:continue
                     if t.date.year != YEAR : continue
+                    _nbOper += 1
                     totalCost += tVal
                     valuation = abs(cgain.wVal)
                     _sum += g
@@ -99,9 +101,16 @@ if __name__ == '__main__':
             decl[223]= decl[220] - decl[221] - decl[222]
             decl[224]= int(decl[218] - (decl[223] * decl[217] / decl[212]) )
             
-            print (f"For Year {YEAR}: cost ={totalCost:+7.2f}, sold={totalCost+_sum:+7.2f}, gain ={_sum:+7.2f}, valuation={valuation:+7.2f}")
+            print (f"For Year {YEAR}:")
+            print (f" - Sold coins for {totalCost+_sum:+7.2f} Eur over {_nbOper} operations")
+            print (f" - These coins average buy price was {totalCost:+7.2f} Eur")
+            print (f" - The justification of buy price is given in file '{journalName}'")
+            print (f" - The details of the {_nbOper} operations are given in file '{outname}'")
+
+            print (f"For French declaration:")
             for n in sorted(list(decl.keys())):
-                print(f" 2086.{n} : {decl[n]}")
+                print(f" -  2086.{n} : {decl[n]}")
+            print ("---------------------------")
         except Exception as E:
             printE(f"Saving to CSV file {outname} failed")
             raise
