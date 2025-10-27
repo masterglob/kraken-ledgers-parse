@@ -1,4 +1,3 @@
-# kraken-ledgers-parse
 Parse Kraken ledgers export to ease taxes declarations.
 It is intended to fit French tax declaration rules (2022), but may be used in more general way to get a summary of operations.
 
@@ -8,8 +7,28 @@ It is intended to fit French tax declaration rules (2022), but may be used in mo
 
 ### Ledgers
 This file is the Kraken export and contains all operations on this platform
-- In your Kraken account, export a LEDGERS csv file. this exports MUST start with the account creation and must contains all operations since.
+- In your Kraken account, export all trades as csv file. this exports **MUST** start with the account creation and must contains all operations since.
+  - From Kraken "Classic" view : "History/Export".
+  - Select `Ledgers`/  `All fields`
+  - From : Set 1st January of the account creation
+  - To : set 31 Dec of previous year
+  - Clic `Submit`
+  - The file is processed and can be downloaded once processed (Clic on the 3 dots on the right)
+  
 - Save this files as `files/ledgers<XXXX>.csv`, replacing <XXXX> by the current year. (e.g. `files/ledgers2022.csv`). It is expected that the year is ended, so that all transactions are declared
+
+Note : this file is epxected to have this first line (If not, the parser will fail):
+
+```
+"txid","refid","time","type","subtype","aclass","asset","amount","fee","balance"
+```
+
+Note: Exporting "Trades" format is not supported yet. Their expected header is :
+
+```
+"txid","ordertxid","pair","time","type","ordertype","price","cost","fee","vol","margin","misc","ledgers"
+```
+
 
 ### Deposits
 This file intends at providing all (non-EURO) deposits on the account. It is mandatory so that the parser can evaluate the value of each asset in the wallet.
@@ -25,11 +44,13 @@ This file intends at providing all (non-EURO) deposits on the account. It is man
   - `note` is a more detailled field precising the type of the deposit. This is not currently used by the tool, but only intended for help.
 
 Example :
+
 ```
 "time","asset","amount","costEur","reason","note"
 "2022-05-28 22:06:00","LUNA2", "0.04592400", 0.0, "fork","LUNA => LUNA+LUNA2, implicit airdrop"
 "2023-02-04 12:19:29","KAVA", "2.91921000", "3.0" ,"deposit","KAVA deposit 2.91921000"
 ```
+
 Note:
 - Currently, the version only considers EUR as 'fiat' asset. Thus USD (or other fiat asset) external operations will have to be registered in the `deposit` file.
 - There is no need to list EUR deposits, as by definition, the buying price is constant and does not need justification
