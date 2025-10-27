@@ -8,13 +8,13 @@ import sys
 from datetime import datetime
 
 from read_csv import CSV_File, Transaction,CalcExcept, AValue, DEBUG, BalanceError, DEPOSIT_EUR_FEE, actualAsset, Ledger_Kraken
+from read_csv import niceFloat, FIAT_EUR
 
 from journal import Journal
-from known_coins import FIAT_EUR
-
 
 # Set DBG_ASSET to None or any asset name (e.g. "SOL")
 DBG_ASSET = None
+DBG_ASSET = "KSM"
 #DBG_ASSET="MATIC"
 
 # Set DBG_TXID to None or any tid name (e.g. "LS5Q2D-WJ7WC-73LBHD")
@@ -22,12 +22,6 @@ DBG_TXID = "LJAI5D-44HPZ-RUDXXS"
 
 def isEURO(asset):return asset == FIAT_EUR
 
-def niceFloat(f):
-    if abs(f) < 1e-20: return "0"
-    if abs(f) < 1e-4: return f"{f:.2e}"
-    if abs(f) < 1e-2: return f"{f:.4f}"
-    if abs(f) < 10: return f"{f:.3f}" 
-    return f"{f:.0f}" 
 class CGain:
     def __init__(self, trans, gain, tVal, deposit, wVal, fees =0):
         self.trans= trans
@@ -265,7 +259,7 @@ class Wallet(object):
             if m > 1e-4:
                 delta = abs(self.currencies[val.asset].amount - val.value)/m
                 if dbg:
-                    DEBUG (f"Balance ({val.asset}):Found={self.currencies[val.asset]}/Exp={val.value}, m={m}, delta={delta}")
+                    DEBUG (f"Balance ({val.asset}/{trans.notice}):Found={self.currencies[val.asset]}/Exp={val.value}, m={m}, delta={delta}")
                 if delta > 1e-2:
                     # print(f"While processing trans {trans}", file = sys.stderr)
                     print(f"Balance error in transaction {trans} @{trans.date}")
@@ -344,6 +338,7 @@ class GainCalculcator(object):
         '''
         self.wallet = Wallet()
         self.__lines=[]
+        self.__exclTxId=[]
         
     def inject(self, filename):
         csv = CSV_File(filename)
@@ -353,6 +348,24 @@ class GainCalculcator(object):
             if trans:
                 self.__lines.append(trans)
         
+    def exclusionList(self, filename):
+        try:
+            with open(filename) as f:
+                print(f"[II] Opening file {filename}")
+                title =""
+                for l in f.readlines():
+                    if not title:
+                        title = l.strip()
+                        if title != '"txid"':
+                            ERROR (f"Invalid exclusion file :{filename}")
+                        continue
+                        
+                    self.__exclTxId.append(l.strip().strip ('"'))
+            DEBUG("Exclusion list:")
+            for r in self.__exclTxId: DEBUG(f"- [{r}]")
+        except:
+            DEBUG(f"Exclusin file not found ({filename}). Ignored")
+        
     def process(self, journalFile=sys.stdout):
         self.__lines.sort(key=lambda trans:trans.date)
         
@@ -361,6 +374,9 @@ class GainCalculcator(object):
             #  Try to identify currency pair
             if not trans:continue
             
+            if trans.txid in self.__exclTxId : 
+                DEBUG(f"Skiiping excluded line {trans.txid}")
+                continue
             
             if journalFile:
                 print ("==========================", file=journalFile)

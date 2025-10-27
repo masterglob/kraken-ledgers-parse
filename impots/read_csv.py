@@ -7,15 +7,31 @@ import sys
 from datetime import datetime
 import re
 
+FIAT_EUR="EUR"
+
 DEPOSIT_EUR_FEE=">depEUR"
+
+TYPE_TRANSFER = "transfer"
+TYPE_WITHDRAW = "withdrawal"
+
 def DEBUG(x):
-    if 0 : print(f"[DD]:{str(x)}")
+    if 1 : print(f"[DD]:{str(x)}")
+
+def niceFloat(f):
+    if abs(f) < 1e-20: return "0"
+    if abs(f) < 1e-4: return f"{f:.2e}"
+    if abs(f) < 1e-2: return f"{f:.4f}"
+    if abs(f) < 10: return f"{f:.3f}" 
+    return f"{f:.0f}" 
 
 def actualAsset(asset):
     m = re.match(r'(.*[^0-9])[0-9]*[.][MS]?', asset)
     if m:
         return m.group(1)
     return asset
+
+def rootCoin(c):
+    return actualAsset(c.asset)
 
 class BalanceError(Exception): 
     def __init__(self, msg, asset, txid, delta): 
@@ -128,6 +144,7 @@ class Ledger_Kraken(CSV_Gen):
         CSV_Gen.__init__(self)
         self.pending = {} # {refid : _Entry}
         self.pendingtransfer = {}  # {asset: Transaction}.
+        self.lastPending = None
     def name(self): return "Kraken-Ledger"  
     @staticmethod
     def eval(value, title): 
@@ -139,10 +156,34 @@ class Ledger_Kraken(CSV_Gen):
         if title == "time": value = krakenTime(value)
         return value
     
-    def toTransaction(self, line:list) -> Transaction:
-        if line["subtype"] == "spotfromfutures" and line["type"] =="transfer" :
-            line["type"] = "reason" 
+    def _isTransfer(self, entry):
         
+        for _id, ref in self.pending.items():
+            if ref.type != TYPE_TRANSFER: continue
+                
+            if rootCoin(ref) != rootCoin(entry) : continue
+            
+            val = (abs(ref.amount) + abs(entry.amount)) / 2
+            if val < 1e-15: continue
+            sum = ref.amount + entry.amount
+            
+            if abs(sum / val) > 1e-8 : ERROR(f"Invalid transfer refId={ref.refid} ({ref.amount} <=> {entry.amount} {rootCoin(entry)})")
+            DEBUG(f"Found transfer for {niceFloat(ref.amount)} {rootCoin(entry)}")
+            return ref
+        return None
+    
+    def toTransaction(self, line:list) -> Transaction:
+        if line["subtype"] == "spotfromfutures" and line["type"] == TYPE_TRANSFER :
+            line["type"] = "reason" 
+            
+        if line["subtype"] == "migration" and line["type"] == "earn" :
+            line["type"] = TYPE_TRANSFER
+            line["balance"] = "auto"
+            
+        if (line["subtype"] == "reward" and line["type"] == "earn") or  line["type"] == "staking":
+            # TODO : now Kraken may use the same name for different "Earn" sub-wallets (KAVA, KAVA.Earn/7, KAVA.EARN/21.. are all named "KAVA")
+            line["balance"] = "auto"
+            
         if line["txid"] == "LLFDLB-EM6Y3-G5VLTA":
             _dbg=1
             
@@ -151,14 +192,31 @@ class Ledger_Kraken(CSV_Gen):
         if line["refid"] == "LLFDLB-EM6Y3-G5VLTA":
             _dbg=1
             
-        if entry.type == "staking" or  entry.type == "margin":
+        if entry.type in ["staking",  "earn", "margin"]:
             # Virtually create the line since it has not the same 'refid' (or no such line exists)
             lineS = line.copy()
             lineS["txid"] = ""
             lineS["balance"] = "auto"
             lineS["fee"] = 0.0
             self.pending[entry.refid] = Ledger_Kraken._Entry(lineS)
-        
+
+        elif entry.type == TYPE_WITHDRAW:
+            # Virtually create the line (one line only for withdraw)
+            lineS = line.copy()
+            lineS["balance"] = "auto"
+            lineS["fee"] = 0.0
+            lineS["asset"] = FIAT_EUR
+            lineS["amount"] = 0.0
+            self.pending[entry.refid] = Ledger_Kraken._Entry(lineS)
+            
+        elif entry.type == "deposit":
+            # Virtually create the line (one line only for deposit)
+            lineS = line.copy()
+            lineS["txid"] = ""
+            lineS["balance"] = "auto"
+            lineS["fee"] = 0.0
+            self.pending[entry.refid] = Ledger_Kraken._Entry(lineS)
+            
         elif entry.type == "rollover":
             # Discard previous line
             try:del self.pending[entry.refid]
@@ -170,28 +228,44 @@ class Ledger_Kraken(CSV_Gen):
             lineS["fee"] = 0.0
             self.pending[entry.refid] = Ledger_Kraken._Entry(lineS)
         
-        try:prevEntry = self.pending[entry.refid]
+        # Here we are trying to match 2 operations that actually are a single swp/exchange etc
+        
+        # Case 1 : 2 entries have the same "refid"
+        entryRefId = entry.refid
+        try:prevEntry = self.pending[entryRefId]
         except:prevEntry = None
         
+        # Case 2 (Stake or transfer) : refId have change in 2025 and both line do not match
+        # Match transfer from content on consecutive lines
+        if not prevEntry:
+            prevEntry = self._isTransfer(entry)
+            if prevEntry:
+                entryRefId = prevEntry.refid
+        
         if prevEntry == None:
-            self.pending[entry.refid] = entry
-            self.lastPending = entry.refid
+            self.pending[entryRefId] = entry
+            self.lastPending = entryRefId
             return
         
         reason = entry.type
         # Use previous entry to compute transaction
         try:
-            assert(prevEntry.refid == entry.refid)
+            assert(prevEntry.refid == entryRefId or reason == TYPE_TRANSFER)
             src = AValue(asset=prevEntry.asset, value=prevEntry.amount)
             dst = AValue(asset=entry.asset, value=entry.amount)
+            if reason in [TYPE_TRANSFER, TYPE_WITHDRAW] and dst.value < 0:
+                src, dst= dst, src
         except:
             print(f"While processing {line}", file = sys.stderr)
             print(f"Previous entry was {prevEntry}", file = sys.stderr)
             ERROR (f"Invalid values ")
         
+        if entry.type == "earn":
+            reason = "earn"
         if not prevEntry.txid:
             # if value is negative, then swap source/dest
-            assert(src.value == dst.value)
+            if not src.value == dst.value:
+                ERROR(f"Invalid amount : {src} / {dst}")
             if dst.value < 0:
                 dst.value=0.0
             else:
@@ -203,7 +277,7 @@ class Ledger_Kraken(CSV_Gen):
         if src.value > 0 or dst.value < 0:
             print(f"While processing {line}", file = sys.stderr)
             print(f"Previous entry was {prevEntry}", file = sys.stderr)
-            ERROR (f"src.value = {src.value} , src.value = {dst.value} , ")
+            ERROR (f"{src} => {dst} , ")
         
         # Check special case when Two consecutive transaction cancel each other (withdrawal with neg fees on second)
         if (src.asset == dst.asset
@@ -217,12 +291,17 @@ class Ledger_Kraken(CSV_Gen):
             res = Transaction(src=src, dst=dst, fees=fees, bal=bal, notice=reason,
                                date=line['time'], txid=line['txid'])
             
-            # note : some staking operations are sometime shown as 2 distinct transactions which causes the loss of
-            # actual transaction context. In that case, the 2 transactions are consolidated in a single one
-            
-            res = self.consolidateWithLastTx(res)
+            if 0:
+                # note : some staking operations are sometime shown as 2 distinct transactions which causes the loss of
+                # actual transaction context. In that case, the 2 transactions are consolidated in a single one
+                
+                try:
+                    res = self.consolidateWithLastTx(res)
+                except Exception as E:
+                    print(f"Processing of {entry} failed")
+                    raise E
         # print (res)
-        del self.pending[entry.refid]
+        del self.pending[entryRefId]
         
         return res
     def consolidateWithLastTx(self, trans:Transaction) -> Transaction:
@@ -236,8 +315,8 @@ class Ledger_Kraken(CSV_Gen):
         if name in Ledger_Kraken.TRANSFERABLE:
             name = Ledger_Kraken.TRANSFERABLE[name]
         
-        if trans.notice == "transfer":
-            assert(trans.src.asset == trans.dst.asset)
+        if trans.notice == TYPE_TRANSFER:
+            assert(rootCoin(trans.src) == rootCoin(trans.dst))
         elif trans.notice == "withdrawal" :
             if not (trans.src.asset == trans.dst.asset
                     and trans.src.value + trans.dst.value == 0):
@@ -256,7 +335,8 @@ class Ledger_Kraken(CSV_Gen):
         
         # Create a virtual transaction holding the 2 sub-transactions
         if abs(trans.src.value) > 1e-8:
-            assert(abs(trans.dst.value) < 1e-8)
+            if abs(trans.dst.value) > 1e-8:
+                ERROR(f"Balance issue {trans.src} => {trans.dst}")
             src = AValue(asset=trans.src.asset, value=trans.src.value)
             dst = AValue(asset=prev.dst.asset, value=prev.dst.value)
         else:
@@ -277,12 +357,7 @@ class Ledger_Kraken(CSV_Gen):
 class CSV_Kraken(CSV_Gen):
     HEADERS = ["txid", "ordertxid", "pair", "time", "type", "ordertype", "price", "cost", "fee", "vol", "margin", "misc", "ledgers"]
     HEADERS_OUT = ["ordertxid", "ordertype", "margin", "ledgers"]
-    COINS=["EUR", "MANA", "NANO", "XTZ", "GRT", "XXLMZ", "XXRPZ", "ANT", "ADA", "CRV", "DOT", "TRX", "FLOW", 
-           "SNX", "OCEAN", "EWT", "KNC", "KSM", "XDG", "KAVA", "REN", "ZRX", "FLOW", "CTSI", "LRC", "USDT", "SOL",
-           "POLIS", "USDC", "LUNA", "LUNAC", "UST", "BSX", "LUNA2", "XETCZ", "NEAR", "SHIB",
-           "XXBTZ", "XXBT", 
-           "ETH", "XETHZ", "XETH", "ETHW"]
-    ALIASES={"XETHZ":"XETH", "XXBTZ":"XXBT"}
+
     def __init__(self): CSV_Gen.__init__(self)
     def name(self): return "Kraken"  
     @staticmethod
@@ -295,22 +370,14 @@ class CSV_Kraken(CSV_Gen):
         return value
     def toTransaction(self, line:list) -> Transaction:
         pairName = line['pair']
-        source = ""
-        dest =""
-        # There may be prefixes, so make a dummy split and check
-        for i in range(2, len(pairName) - 2):
-            s = pairName[:i]
-            d = pairName[i:]
-            if s in self.COINS and d in self.COINS: 
-                source = s
-                dest = d
-                break
+        try:
+            source , dest = pairName.split("/")
+            if not source or not dest:
+                raise Exception("")
         
-        if source in self.ALIASES : source = self.ALIASES[source]
-        if dest in self.ALIASES : dest = self.ALIASES[dest] 
-        if source == "" or dest == "" or source == dest \
-            or source not in self.COINS or dest not in self.COINS:
-            ERROR(f"Failed to identify currency pair from {pairName}")
+        except Exception as E:
+            ERROR(f"Failed to recognize pair {pairName} ({E})")
+        if source == dest : Error(f"Invalid pair {pairName}")
         DEBUG(f"Detected pair: {(source,dest)}")
         try:
             tType = line['type']
@@ -335,9 +402,9 @@ class CSV_Kraken(CSV_Gen):
             currFee = source
             amntFee = amntFee / price
         
-        return Transaction(amntSrc=amntSrc, currSrc=source,
-                           amntDest=amntDest, currDest=dest, 
-                           amntFee=amntFee, currFee=currFee)
+        return Transaction(src=AValue(asset = source,  value = amntSrc),
+                           dst=AValue(asset = dest, value = amntDest),
+                           fees=[AValue(asset = currFee, value = amntFee)])
     
 class Operation(object):
     def __init__(self, d : dict):

@@ -41,6 +41,7 @@ if __name__ == '__main__':
         
         decl = {}
         gains = GainCalculcator()
+        gains.exclusionList(f'files/invalid{YEAR}.csv')
         gains.inject(f'files/deposits{YEAR}.csv')
         gains.inject(f'files/ledgers{YEAR}.csv')
         
